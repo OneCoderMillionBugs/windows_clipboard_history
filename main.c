@@ -17,10 +17,12 @@
     }
 #endif
 
-#define BUFFER_SIZE 9
+#define CLIENT_W 790
+#define CLIENT_H 500
+#define BUFFER_SIZE 27
 #define BLOCKS_PER_ROW 3
-#define OFFSET_X 10
-#define OFFSET_Y 10
+#define ROWS_PER_PAGE 3
+#define BLOCKS_PER_PAGE 9
 #define BLOCK_W 250
 #define BLOCK_H 150
 
@@ -39,6 +41,13 @@ struct vargs
     RECORD *buffer;
 }
 typedef VARGS;
+
+struct userdata
+{
+    RECORD *buffer;
+    SCROLLINFO *si;
+}
+typedef USERDATA;
 
 
 const UINT FORMATS[] = {
@@ -115,14 +124,80 @@ RECORD *initBuffer(void)
 
 LRESULT CALLBACK WindowProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
 {
+    USERDATA *ud = (USERDATA *)GetWindowLongPtrW(hwnd, GWLP_USERDATA);
+    static size_t copyIndex = -1;
+
     switch (msg)
     {
         case WM_DESTROY:
+        {
             PostQuitMessage(0);
             break;
+        }
+        case WM_MOUSEWHEEL:
+        {
+            SCROLLINFO *si = ud->si;
 
+            if ((short)HIWORD(wp) / WHEEL_DELTA < 0 && si->nPos < si->nMax - si->nPage)
+            {
+                si->nPos = si->nPos + si->nPage;
+                SetScrollInfo(hwnd, SB_VERT, si, TRUE);
+                InvalidateRect(hwnd, NULL, TRUE);
+            }
+            else if ((short)HIWORD(wp) / WHEEL_DELTA > 0 && si->nPos > si->nMin)
+            {
+                si->nPos = si->nPos - si->nPage;
+                SetScrollInfo(hwnd, SB_VERT, si, TRUE);
+                InvalidateRect(hwnd, NULL, TRUE);
+            }
+            break;
+        }
+        case WM_VSCROLL:
+        {
+            SCROLLINFO *si = ud->si;
+            switch (LOWORD(wp))
+            {
+                case SB_LINEDOWN:
+                {
+                    if (si->nPos < si->nMax - si->nPage)
+                    {
+                        si->nPos = si->nPos + si->nPage;
+                        SetScrollInfo(hwnd, SB_VERT, si, TRUE);
+                        InvalidateRect(hwnd, NULL, TRUE);
+                    }
+                    break;
+                }
+                case SB_LINEUP:
+                {
+                    if (si->nPos > si->nMin)
+                    {
+                        si->nPos = si->nPos - si->nPage;
+                        SetScrollInfo(hwnd, SB_VERT, si, TRUE);
+                        InvalidateRect(hwnd, NULL, TRUE);
+                    }
+                    break;
+                }
+            }
+            break;
+        }
+        case WM_RBUTTONDOWN:
+        {
+            SCROLLINFO *si = ud->si;
+            WORD x = LOWORD(lp);
+            WORD y = HIWORD(lp);
+
+            const SCROLLINFO *csi = ud->si;
+            size_t bufOffset = csi->nPos / csi->nPage * BLOCKS_PER_PAGE;
+
+            copyIndex = bufOffset + BLOCKS_PER_ROW * (y / BLOCK_H) + (x / BLOCK_W);
+            InvalidateRect(hwnd, NULL, TRUE);
+
+            break;
+        }
         case WM_PAINT:
-            RECORD *buffer = (RECORD *)GetWindowLongPtrW(hwnd, GWLP_USERDATA);
+        {
+            const SCROLLINFO *csi = ud->si;
+            RECORD *buffer = ud->buffer;
             PAINTSTRUCT ps;
             HDC hdc = BeginPaint(hwnd, &ps);
 
@@ -130,48 +205,62 @@ LRESULT CALLBACK WindowProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
                                       0, 0, 0, 0, L"Georgia");
             HFONT holdFont = SelectObject(hdc, hFont);
 
-            for (size_t i = 0; i < BUFFER_SIZE; i++)
+            // Buffer index offset depending on the current page
+            size_t bufOffset = csi->nPos / csi->nPage * BLOCKS_PER_PAGE;
+
+            for (size_t i = 0; i < BLOCKS_PER_PAGE; i++)
             {
                 int x = i % BLOCKS_PER_ROW;
                 int y = i / BLOCKS_PER_ROW;
-                Rectangle(hdc, 10 + x * BLOCK_W, 10 + y * BLOCK_H, 
-                          x * BLOCK_W + BLOCK_W, y * BLOCK_H + BLOCK_H);
+
+                if (i + bufOffset == copyIndex)
+                {
+                    HPEN hlPen = CreatePen(PS_SOLID, 5, RGB(67, 130, 192));
+                    HPEN defaultPen = SelectObject(hdc, hlPen);
+                    Rectangle(hdc, 10 + x * BLOCK_W, 10 + y * BLOCK_H, 
+                              x * BLOCK_W + BLOCK_W, y * BLOCK_H + BLOCK_H);
+                    SelectObject(hdc, defaultPen);
+                }
+                else
+                {
+                    Rectangle(hdc, 10 + x * BLOCK_W, 10 + y * BLOCK_H, 
+                              x * BLOCK_W + BLOCK_W, y * BLOCK_H + BLOCK_H);
+                }
 
                 RECT drawArea = {30 + x * BLOCK_W, 30 + y * BLOCK_H, 
                                  x * BLOCK_W + BLOCK_W - 30, y * BLOCK_H + BLOCK_H - 30};
 
-                switch(buffer[i].format)
+                switch(buffer[i + bufOffset].format)
                 {
                     case CF_UNICODETEXT:
                     {
-                        WCHAR *text = (WCHAR *)buffer[i].data;
+                        WCHAR *text = (WCHAR *)buffer[i + bufOffset].data;
                         DrawTextW(hdc, text, lstrlenW(text), &drawArea, 
                                   DT_CENTER | DT_VCENTER | DT_WORDBREAK);
                         break;
                     }
                     case CF_HDROP:
                     {
-                        UINT count = DragQueryFileW((HDROP)buffer[i].data, 0xFFFFFFFF, NULL, 0);
+                        UINT count = DragQueryFileW((HDROP)buffer[i + bufOffset].data, 0xFFFFFFFF, NULL, 0);
                         for (size_t j = 0; j < count; j++)
                         {
-                            UINT bufferSize = 1 + DragQueryFileW((HDROP)buffer[i].data, j, NULL, 0);
+                            UINT bufferSize = 1 + DragQueryFileW((HDROP)buffer[i + bufOffset].data, j, NULL, 0);
                             LPWSTR filename = (LPWSTR)malloc(sizeof(WCHAR) * bufferSize);
-                            DragQueryFileW((HDROP)buffer[i].data, j, filename, bufferSize);
+                            DragQueryFileW((HDROP)buffer[i + bufOffset].data, j, filename, bufferSize);
 
                             DrawTextW(hdc, filename, lstrlenW(filename), &drawArea, 
                                       DT_CENTER | DT_VCENTER | DT_WORDBREAK);
                             free(filename);
                         }
-
                         break;
                     }
                     case CF_DIB:
                     {
-                        BITMAPINFO *bmi = (BITMAPINFO *)buffer[i].data;
+                        BITMAPINFO *bmi = (BITMAPINFO *)buffer[i + bufOffset].data;
                         SetStretchBltMode(hdc, HALFTONE);
-                        StretchDIBits(hdc, 10 + x * BLOCK_W, 10 + y * BLOCK_H, BLOCK_W - 10, BLOCK_H - 10, 
+                        StretchDIBits(hdc, 10 + x * BLOCK_W, 10 + y * BLOCK_H, BLOCK_W - 10, BLOCK_H - 10,
                                       0, 0, bmi->bmiHeader.biWidth, bmi->bmiHeader.biHeight,
-                                      buffer[i].data + sizeof(BITMAPINFO), 
+                                      buffer[i + bufOffset].data + sizeof(BITMAPINFO), 
                                       bmi,
                                       DIB_RGB_COLORS,
                                       SRCCOPY);
@@ -182,7 +271,7 @@ LRESULT CALLBACK WindowProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
 
             EndPaint(hwnd, &ps);
             break;
-
+        }
         default:
             return DefWindowProcW(hwnd, msg, wp, lp);
     }
@@ -209,19 +298,27 @@ int APIENTRY WinMain(HINSTANCE hInst, HINSTANCE hPrevInst, LPSTR args, int ncmds
     RegisterClassW(&wc);
 
     HWND window = CreateWindowW(L"mainWindow", L"Clipboard", 
-                                WS_OVERLAPPEDWINDOW | WS_VISIBLE | WS_VSCROLL, 
-                                200, 200, 790, 500, 
+                                WS_OVERLAPPEDWINDOW ^ WS_THICKFRAME | WS_VISIBLE | WS_VSCROLL, 
+                                200, 200, CLIENT_W, CLIENT_H, 
                                 NULL, NULL, NULL, NULL);
 
-    // ShowWindow(window, SW_MINIMIZE);
-    // Shell_NotifyIconW(); Future feature with hiding the window
+    // Setup scrollbar
+    SCROLLINFO si = {sizeof(SCROLLINFO)};
+    si.fMask = SIF_POS | SIF_PAGE | SIF_RANGE | SIF_DISABLENOSCROLL;
+    si.nPos = 0;
+    si.nPage = CLIENT_H;
+    si.nMin = 0;
+    si.nMax = BUFFER_SIZE / BLOCKS_PER_PAGE * CLIENT_H;
+
+    SetScrollInfo(window, SB_VERT, &si, TRUE);
 
     // Pass the arguments to the monitorClip function
     VARGS vargs = {&index, &updateScreen, buffer};
     HANDLE hThread = CreateThread(NULL, 0, monitorClip, &vargs, 0, NULL);
 
     // Set GWLP_USERDATA so callback function can take additional parameters
-    SetWindowLongPtrW(window, GWLP_USERDATA, (LONG_PTR)buffer);
+    USERDATA ud = {buffer, &si};
+    SetWindowLongPtrW(window, GWLP_USERDATA, (LONG_PTR)&ud);
 
     while (GetMessage(&msg, NULL, 0, 0))
     {
@@ -239,7 +336,7 @@ int APIENTRY WinMain(HINSTANCE hInst, HINSTANCE hPrevInst, LPSTR args, int ncmds
 }
 
 /**
- * To-do list:
+ * TODO:
  * Free allocated memory
- * 
+ * Shell_NotifyIconW(); Future feature with hiding the window
  */
