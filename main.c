@@ -6,17 +6,6 @@
 #pragma comment(lib, "Gdi32.lib")
 #pragma comment(lib, "Shell32.lib")
 
-#define DEBUG
-#ifdef DEBUG
-    #define LOGPATH L"c:\\users\\ilyas\\desktop\\log.txt"
-    void writelog(LPCWSTR message)
-    {
-        FILE *file = _wfopen(LOGPATH, L"a");
-        fwprintf(file, L"%ls\n", message);
-        fclose(file);
-    }
-#endif
-
 #define CLIENT_W 790
 #define CLIENT_H 500
 #define BUFFER_SIZE 27
@@ -26,17 +15,28 @@
 #define BLOCK_W 250
 #define BLOCK_H 150
 
+#define DEBUG
+#ifdef DEBUG
+    #define LOGPATH L"log.txt"
+    void writelog(LPCWSTR message)
+    {
+        FILE *file = _wfopen(LOGPATH, L"a");
+        fwprintf(file, L"%ls\n", message);
+        fclose(file);
+    }
+#endif
 
 struct record
 {
     UINT format;
+    UINT size;
     BYTE *data;
 }
 typedef RECORD;
 
 struct vargs
 {
-    size_t *index;
+    UINT *index;
     BOOL *updateScreen;
     RECORD *buffer;
 }
@@ -53,6 +53,9 @@ typedef USERDATA;
 const UINT FORMATS[] = {
     CF_UNICODETEXT, CF_DIB, CF_HDROP
 };
+// Custom format for avoiding copy of data
+// from clipboard history (buffer)
+UINT CF_IGNORE;
 
 
 UINT getClipboardFormat(void)
@@ -82,16 +85,17 @@ DWORD WINAPI monitorClip(LPVOID lpParam)
 
         if (currentNum != prevNum)
         {
-            OpenClipboard(NULL);
             UINT format = getClipboardFormat();
 
-            if (format == -1)
+            if (IsClipboardFormatAvailable(CF_IGNORE) || 
+                !OpenClipboard(NULL) || 
+                format == -1)
             {
                 continue;
             }
 
             HANDLE h = GetClipboardData(format);
-            size_t size = GlobalSize(h);
+            UINT size = GlobalSize(h);
             BYTE *ptr = (BYTE *)GlobalLock(h);
 
             vargs->buffer[*(vargs->index)].data = (BYTE *)malloc(size);
@@ -100,6 +104,7 @@ DWORD WINAPI monitorClip(LPVOID lpParam)
             GlobalUnlock(h);
             CloseClipboard();
 
+            vargs->buffer[*(vargs->index)].size = size;
             vargs->buffer[*(vargs->index)].format = format;
             *(vargs->index) = *(vargs->index) + 1;
             *(vargs->updateScreen) = TRUE;
@@ -113,7 +118,7 @@ DWORD WINAPI monitorClip(LPVOID lpParam)
 RECORD *initBuffer(void)
 {
     RECORD *buffer = (RECORD *)malloc(BUFFER_SIZE * sizeof(RECORD));
-    for (size_t i = 0; i < BUFFER_SIZE; i++)
+    for (UINT i = 0; i < BUFFER_SIZE; i++)
     {
         buffer[i].format = 0;
         buffer[i].data = NULL;
@@ -125,7 +130,7 @@ RECORD *initBuffer(void)
 LRESULT CALLBACK WindowProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
 {
     USERDATA *ud = (USERDATA *)GetWindowLongPtrW(hwnd, GWLP_USERDATA);
-    static size_t copyIndex = -1;
+    static UINT copyIndex = -1;
 
     switch (msg)
     {
@@ -187,9 +192,28 @@ LRESULT CALLBACK WindowProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
             WORD y = HIWORD(lp);
 
             const SCROLLINFO *csi = ud->si;
-            size_t bufOffset = csi->nPos / csi->nPage * BLOCKS_PER_PAGE;
-
+            UINT bufOffset = csi->nPos / csi->nPage * BLOCKS_PER_PAGE;
             copyIndex = bufOffset + BLOCKS_PER_ROW * (y / BLOCK_H) + (x / BLOCK_W);
+
+            if (OpenClipboard(NULL) && ud->buffer[copyIndex].format != 0)
+            {
+                // Copy data from buffer to the new (Global) address since 
+                // after calling SetClipBoardData the system takes control 
+                // over the given chunk of memory (until the CloseClipboard is called)
+                UINT format = ud->buffer[copyIndex].format;
+                HGLOBAL hg = GlobalAlloc(GMEM_MOVEABLE, ud->buffer[copyIndex].size);
+                BYTE *gptr = GlobalLock(hg);
+                memcpy(gptr, ud->buffer[copyIndex].data, ud->buffer[copyIndex].size);
+
+                if (SetClipboardData(format, hg) == NULL)
+                {
+                    writelog(L"ERROR");
+                }
+                SetClipboardData(CF_IGNORE, NULL);
+                GlobalUnlock(hg);
+                CloseClipboard();
+            }
+
             InvalidateRect(hwnd, NULL, TRUE);
 
             break;
@@ -206,9 +230,9 @@ LRESULT CALLBACK WindowProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
             HFONT holdFont = SelectObject(hdc, hFont);
 
             // Buffer index offset depending on the current page
-            size_t bufOffset = csi->nPos / csi->nPage * BLOCKS_PER_PAGE;
+            UINT bufOffset = csi->nPos / csi->nPage * BLOCKS_PER_PAGE;
 
-            for (size_t i = 0; i < BLOCKS_PER_PAGE; i++)
+            for (UINT i = 0; i < BLOCKS_PER_PAGE; i++)
             {
                 int x = i % BLOCKS_PER_ROW;
                 int y = i / BLOCKS_PER_ROW;
@@ -227,8 +251,8 @@ LRESULT CALLBACK WindowProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
                               x * BLOCK_W + BLOCK_W, y * BLOCK_H + BLOCK_H);
                 }
 
-                RECT drawArea = {30 + x * BLOCK_W, 30 + y * BLOCK_H, 
-                                 x * BLOCK_W + BLOCK_W - 30, y * BLOCK_H + BLOCK_H - 30};
+                RECT drawArea = {20 + x * BLOCK_W, 20 + y * BLOCK_H, 
+                                 x * BLOCK_W + BLOCK_W - 20, y * BLOCK_H + BLOCK_H - 20};
 
                 switch(buffer[i + bufOffset].format)
                 {
@@ -236,22 +260,41 @@ LRESULT CALLBACK WindowProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
                     {
                         WCHAR *text = (WCHAR *)buffer[i + bufOffset].data;
                         DrawTextW(hdc, text, lstrlenW(text), &drawArea, 
-                                  DT_CENTER | DT_VCENTER | DT_WORDBREAK);
+                                  DT_EDITCONTROL | DT_CENTER | DT_WORDBREAK);
                         break;
                     }
                     case CF_HDROP:
                     {
                         UINT count = DragQueryFileW((HDROP)buffer[i + bufOffset].data, 0xFFFFFFFF, NULL, 0);
-                        for (size_t j = 0; j < count; j++)
+                        LPWSTR *files = (LPWSTR *)malloc(count * sizeof(LPWSTR));
+                        UINT bufferSizeSum = 1;
+
+                        for (UINT j = 0; j < count; j++)
                         {
                             UINT bufferSize = 1 + DragQueryFileW((HDROP)buffer[i + bufOffset].data, j, NULL, 0);
-                            LPWSTR filename = (LPWSTR)malloc(sizeof(WCHAR) * bufferSize);
-                            DragQueryFileW((HDROP)buffer[i + bufOffset].data, j, filename, bufferSize);
-
-                            DrawTextW(hdc, filename, lstrlenW(filename), &drawArea, 
-                                      DT_CENTER | DT_VCENTER | DT_WORDBREAK);
-                            free(filename);
+                            files[j] = (LPWSTR)malloc(bufferSize * sizeof(WCHAR));
+                            DragQueryFileW((HDROP)buffer[i + bufOffset].data, j, files[j], bufferSize);
+                            bufferSizeSum += bufferSize;
                         }
+
+                        LPWSTR result = (LPWSTR)malloc(bufferSizeSum * sizeof(WCHAR));
+                        UINT resIndx = 0;
+
+                        for (UINT j = 0; j < count; j++)
+                        {
+                            for (UINT k = 0; k < lstrlenW(files[j]); k++)
+                            {
+                                result[resIndx++] = files[j][k];
+                            }
+                            result[resIndx++] = L'\n';
+                            free(files[j]);
+                        }
+                        result[resIndx] = L'\0';
+
+                        DrawTextW(hdc, result, lstrlenW(result), &drawArea, 
+                                  DT_EDITCONTROL | DT_CENTER | DT_WORDBREAK);
+                        free(files);
+                        free(result);
                         break;
                     }
                     case CF_DIB:
@@ -281,9 +324,11 @@ LRESULT CALLBACK WindowProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
 
 int APIENTRY WinMain(HINSTANCE hInst, HINSTANCE hPrevInst, LPSTR args, int ncmdshow)
 {
-    size_t index = 0;
+    UINT index = 0;
     BOOL updateScreen = FALSE;
     RECORD *buffer = initBuffer();
+
+    CF_IGNORE = RegisterClipboardFormatW(L"CF_IGNORE");
 
     // Create window
     MSG msg = {0};
@@ -337,6 +382,12 @@ int APIENTRY WinMain(HINSTANCE hInst, HINSTANCE hPrevInst, LPSTR args, int ncmds
 
 /**
  * TODO:
- * Free allocated memory
+ * Maybe clear the clipboard before putting data
+ * Some of the objects may have several formats!
+ * History overflow
  * Shell_NotifyIconW(); Future feature with hiding the window
+ * Saving history in file
+ * 
+ * TODO: later, mb never :P
+ * Refactor code (add more functions)
  */
