@@ -195,11 +195,12 @@ LRESULT CALLBACK WindowProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
             UINT bufOffset = csi->nPos / csi->nPage * BLOCKS_PER_PAGE;
             copyIndex = bufOffset + BLOCKS_PER_ROW * (y / BLOCK_H) + (x / BLOCK_W);
 
-            if (OpenClipboard(NULL) && ud->buffer[copyIndex].format != 0)
+            if (OpenClipboard(hwnd) && ud->buffer[copyIndex].format != 0)
             {
+                EmptyClipboard();
                 // Copy data from buffer to the new (Global) address since 
                 // after calling SetClipBoardData the system takes control 
-                // over the given chunk of memory (until the CloseClipboard is called)
+                // over the given chunk of memory
                 UINT format = ud->buffer[copyIndex].format;
                 HGLOBAL hg = GlobalAlloc(GMEM_MOVEABLE, ud->buffer[copyIndex].size);
                 BYTE *gptr = GlobalLock(hg);
@@ -382,7 +383,6 @@ int APIENTRY WinMain(HINSTANCE hInst, HINSTANCE hPrevInst, LPSTR args, int ncmds
 
 /**
  * TODO:
- * Maybe clear the clipboard before putting data
  * Some of the objects may have several formats!
  * History overflow
  * Shell_NotifyIconW(); Future feature with hiding the window
