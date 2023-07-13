@@ -8,7 +8,7 @@
 
 #define CLIENT_W 790
 #define CLIENT_H 500
-#define BUFFER_SIZE 27
+#define BUFFER_SIZE 54
 #define BLOCKS_PER_ROW 3
 #define ROWS_PER_PAGE 3
 #define BLOCKS_PER_PAGE 9
@@ -98,6 +98,11 @@ DWORD WINAPI monitorClip(LPVOID lpParam)
             UINT size = GlobalSize(h);
             BYTE *ptr = (BYTE *)GlobalLock(h);
 
+            // In case of overwriting due to buffer overflow
+            if (vargs->buffer[*(vargs->index)].data != NULL)
+            {
+                free(vargs->buffer[*(vargs->index)].data);
+            }
             vargs->buffer[*(vargs->index)].data = (BYTE *)malloc(size);
             memcpy(vargs->buffer[*(vargs->index)].data, ptr, size);
 
@@ -106,7 +111,7 @@ DWORD WINAPI monitorClip(LPVOID lpParam)
 
             vargs->buffer[*(vargs->index)].size = size;
             vargs->buffer[*(vargs->index)].format = format;
-            *(vargs->index) = *(vargs->index) + 1;
+            *(vargs->index) = (*(vargs->index) != BUFFER_SIZE - 1) ? *(vargs->index) + 1 : 0;
             *(vargs->updateScreen) = TRUE;
         }
     }
@@ -290,7 +295,7 @@ LRESULT CALLBACK WindowProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
                             result[resIndx++] = L'\n';
                             free(files[j]);
                         }
-                        result[resIndx] = L'\0';
+                        result[bufferSizeSum - 1] = L'\0';
 
                         DrawTextW(hdc, result, lstrlenW(result), &drawArea, 
                                   DT_EDITCONTROL | DT_CENTER | DT_WORDBREAK);
@@ -384,7 +389,6 @@ int APIENTRY WinMain(HINSTANCE hInst, HINSTANCE hPrevInst, LPSTR args, int ncmds
 /**
  * TODO:
  * Some of the objects may have several formats!
- * History overflow
  * Shell_NotifyIconW(); Future feature with hiding the window
  * Saving history in file
  * 
