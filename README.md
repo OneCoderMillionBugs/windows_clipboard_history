@@ -25,4 +25,4 @@ the application independently monitors changes occurring in the clipboard. \
 In order to return an element from the history to the clipboard, 
 just right-click on it in the application (the element then highlighted with a blue frame).
 
-![Application screenshot](screenshots\eximg1.png)
+![Application screenshot](./screenshots/eximg1.png)
