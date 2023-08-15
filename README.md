@@ -13,7 +13,7 @@ convenient, because other operating systems have long had the ability to
 store data in other formats, I decided to make this small application for Windows.
 
 ## Features
-The application is capable of storing up to 54 copied elements. \
+The application is now capable of storing an unlimited amount of copied elements. \
 List of currently supported formats:
 - Text
 - Bitmaps (e.g screenshots)
